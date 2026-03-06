@@ -1,0 +1,41 @@
+# MetaRayBan Voice Assistant Configuration
+# ==========================================
+
+audio:
+  # Device index or name substring. null = system default.
+  # Run: python main.py --list-devices to see available devices.
+  # Set to your Ray-Ban Meta glasses Bluetooth name/index.
+  input_device: null
+  output_device: null
+  sample_rate: 16000
+  # VAD sensitivity: multiplier over ambient noise floor (lower = more sensitive)
+  vad_sensitivity: 2.5
+  # Seconds of silence before stopping recording
+  silence_duration: 1.5
+
+asr:
+  # faster-whisper model: tiny, base, small, medium, large-v3
+  model: "small"
+  language: "fr"
+  # cpu or cuda
+  device: "cpu"
+  compute_type: "int8"
+
+llm:
+  model: "claude-sonnet-4-20250514"
+  max_tokens: 512
+  system_prompt: |
+    Tu es un assistant vocal personnel intégré dans des lunettes Ray-Ban Meta.
+    Réponds de manière concise et naturelle en français.
+    Tes réponses seront lues à voix haute, donc sois bref et conversationnel.
+    Évite le markdown, les listes à puces, et le formatage complexe.
+    Maximum 2-3 phrases par réponse sauf si on te demande plus de détails.
+
+tts:
+  voice: "fr-FR-HenriNeural"
+  # Alternative voices: fr-FR-DeniseNeural, fr-FR-EloiseNeural
+  rate: "+10%"
+  volume: "+0%"
+
+# Mode: "vad" (continuous listening) or "push" (press Enter to talk)
+mode: "vad"

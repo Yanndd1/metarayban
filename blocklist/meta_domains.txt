@@ -1,0 +1,96 @@
+# =============================================================================
+# Meta / Facebook Telemetry Blocklist for Ray-Ban Meta Glasses
+# =============================================================================
+# Purpose: Block Meta tracking/telemetry while preserving minimal functionality.
+#
+# Categories:
+#   [TELEMETRY]  Analytics, tracking, crash reports    -> BLOCK (safe)
+#   [ADS]        Advertising infrastructure            -> BLOCK (safe)
+#   [SOCIAL]     Facebook/Instagram social features    -> BLOCK (safe for glasses)
+#   [PLATFORM]   Meta platform services                -> BLOCK with caution
+#   [MEDIA]      CDN for media delivery                -> Optional (blocks media sync)
+#
+# Usage:
+#   python generate.py --format hosts    > /etc/hosts.d/meta-block
+#   python generate.py --format dnsmasq  > /etc/dnsmasq.d/meta-block.conf
+#   python generate.py --format pihole   (imports into Pi-hole)
+#   python generate.py --format udr      (instructions for UniFi Dream Router)
+# =============================================================================
+
+# --- [TELEMETRY] Analytics & Tracking ---
+pixel.facebook.com
+analytics.facebook.com
+pixel.instagram.com
+connect.facebook.net
+graph.facebook.com
+b-graph.facebook.com
+graph.instagram.com
+accountkit.com
+graph.accountkit.com
+
+# --- [TELEMETRY] Crash Reporting & Diagnostics ---
+crashlogs.whatsapp.net
+dit.whatsapp.net
+
+# --- [TELEMETRY] MQTT Push / Telemetry Channels ---
+mqtt-mini.facebook.com
+edge-mqtt.facebook.com
+edge-chat.facebook.com
+mqtt.facebook.com
+mqtt.vk.com
+
+# --- [ADS] Advertising ---
+an.facebook.com
+ads.facebook.com
+ad.facebook.com
+www.facebook.com/tr
+bidder.facebook.com
+
+# --- [SOCIAL] Facebook Social ---
+www.facebook.com
+m.facebook.com
+web.facebook.com
+touch.facebook.com
+mbasic.facebook.com
+upload.facebook.com
+rupload.facebook.com
+
+# --- [SOCIAL] Instagram ---
+i.instagram.com
+www.instagram.com
+login.instagram.com
+
+# --- [SOCIAL] Threads ---
+www.threads.net
+
+# --- [PLATFORM] Meta Platform APIs ---
+b-api.facebook.com
+api.facebook.com
+z-m-graph.facebook.com
+portal.facebook.com
+portal.meta.com
+www.meta.com
+about.meta.com
+
+# --- [PLATFORM] Oculus / Quest (glasses may use shared infra) ---
+graph.oculus.com
+mqtt.oculus.com
+www2.oculus.com
+developer.oculus.com
+oculuscdn.com
+scontent.oculuscdn.com
+
+# --- [MEDIA] Content Delivery (blocks media sync/import) ---
+# WARNING: Blocking these prevents photo/video import from glasses
+# Only enable if you don't need media transfer
+# scontent.xx.fbcdn.net
+# video.xx.fbcdn.net
+# external.xx.fbcdn.net
+# static.xx.fbcdn.net
+# scontent-cdg4-3.xx.fbcdn.net
+# z-m-scontent.xx.fbcdn.net
+
+# --- [PLATFORM] WhatsApp (Meta subsidiary, shared telemetry) ---
+web.whatsapp.com
+v.whatsapp.net
+media.fcdn.whatsapp.net
