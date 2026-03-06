@@ -99,34 +99,62 @@ class VoiceAssistant:
         print()
 
     def _resolve_device(self, device_spec, kind: str) -> int | None:
-        """Resolve device spec (index, name substring, or None for default)."""
+        """Resolve device spec (index, name substring, or None for default).
+        kind should be 'Input' or 'Output' to filter by direction."""
         if device_spec is None:
             return None
         if isinstance(device_spec, int):
             return device_spec
         if isinstance(device_spec, str):
             devices = sd.query_devices()
+            is_input = kind.lower() == "input"
             for i, d in enumerate(devices):
                 if device_spec.lower() in d["name"].lower():
+                    # Filter by direction
+                    if is_input and d["max_input_channels"] == 0:
+                        continue
+                    if not is_input and d["max_output_channels"] == 0:
+                        continue
                     print(f"  {kind} device: [{i}] {d['name']}")
                     return i
-            print(f"  WARNING: No device matching '{device_spec}', using default")
+            print(f"  WARNING: No {kind.lower()} device matching '{device_spec}', using default")
         return None
 
     # ─── VAD (energy-based, auto-calibrated) ───────────────────────────
+
+    def _record_callback(self, dev: int | None, duration: float) -> np.ndarray:
+        """Record audio using callback API (required for WDM-KS BT devices)."""
+        import threading
+        frames = []
+        total_samples = int(duration * self.sample_rate)
+        collected = 0
+        done = threading.Event()
+
+        def callback(indata, frame_count, time_info, status):
+            nonlocal collected
+            if status:
+                pass  # ignore xruns during calibration
+            frames.append(indata[:, 0].copy())
+            collected += len(indata)
+            if collected >= total_samples:
+                done.set()
+                raise sd.CallbackStop()
+
+        stream = sd.InputStream(
+            device=dev, channels=1, samplerate=self.sample_rate,
+            dtype="int16", blocksize=480, callback=callback, latency="high",
+        )
+        stream.start()
+        done.wait(timeout=duration + 3)
+        stream.stop()
+        stream.close()
+        return np.concatenate(frames) if frames else np.array([], dtype=np.int16)
 
     def calibrate_noise(self, duration: float = 2.0):
         """Measure ambient noise to set VAD threshold."""
         print("Calibration du bruit ambiant (restez silencieux)...")
         dev = self._resolve_device(self.input_device, "Input")
-        audio = sd.rec(
-            int(duration * self.sample_rate),
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype="int16",
-            device=dev,
-        )
-        sd.wait()
+        audio = self._record_callback(dev, duration)
         noise_level = np.abs(audio.astype(np.float64)).mean()
         self.vad_threshold = max(noise_level * self.vad_sensitivity, 200)
         print(f"  Bruit: {noise_level:.0f} | Seuil VAD: {self.vad_threshold:.0f}")
@@ -139,64 +167,75 @@ class VoiceAssistant:
     # ─── Recording ─────────────────────────────────────────────────────
 
     def listen_vad(self) -> np.ndarray | None:
-        """Listen for speech using VAD, record until silence. Returns int16 mono."""
+        """Listen for speech using VAD, record until silence. Returns int16 mono.
+        Uses callback API for WDM-KS BT device compatibility."""
+        import threading
+
         frame_ms = 30
         frame_size = int(self.sample_rate * frame_ms / 1000)
         silence_frames_needed = int(self.silence_duration * 1000 / frame_ms)
-        min_speech_frames = 3  # need at least 3 speech frames to trigger
+        min_speech_frames = 3
 
         dev = self._resolve_device(self.input_device, "Input")
+
+        # State shared with callback
+        pre_buffer: list[np.ndarray] = []
+        frames: list[np.ndarray] = []
+        state = {"phase": "waiting", "speech_count": 0, "silence_count": 0, "total": 0}
+        done = threading.Event()
+
+        def callback(indata, frame_count, time_info, status):
+            frame = indata[:, 0].copy()
+
+            if state["phase"] == "waiting":
+                # Phase 1: Wait for speech onset
+                pre_buffer.append(frame)
+                if len(pre_buffer) > 10:
+                    pre_buffer.pop(0)
+
+                if self._is_speech(frame):
+                    state["speech_count"] += 1
+                    if state["speech_count"] >= min_speech_frames:
+                        state["phase"] = "recording"
+                        frames.extend(pre_buffer)
+                else:
+                    state["speech_count"] = 0
+
+            elif state["phase"] == "recording":
+                # Phase 2: Record until silence
+                frames.append(frame)
+                state["total"] += 1
+
+                if not self._is_speech(frame):
+                    state["silence_count"] += 1
+                    if state["silence_count"] >= silence_frames_needed:
+                        done.set()
+                        raise sd.CallbackStop()
+                else:
+                    state["silence_count"] = 0
+
+                # Max 30s
+                if state["total"] > int(30 * 1000 / frame_ms):
+                    done.set()
+                    raise sd.CallbackStop()
+
         stream = sd.InputStream(
-            device=dev,
-            channels=1,
-            samplerate=self.sample_rate,
-            dtype="int16",
-            blocksize=frame_size,
+            device=dev, channels=1, samplerate=self.sample_rate,
+            dtype="int16", blocksize=frame_size, callback=callback, latency="high",
         )
         stream.start()
-
         print("... en ecoute ...", end="", flush=True)
 
-        # Phase 1: Wait for speech onset
-        speech_count = 0
-        pre_buffer = []
-        while True:
-            data, _ = stream.read(frame_size)
-            frame = data[:, 0]
-            pre_buffer.append(frame.copy())
-            # Keep last 10 frames as pre-roll
-            if len(pre_buffer) > 10:
-                pre_buffer.pop(0)
-
-            if self._is_speech(frame):
-                speech_count += 1
-                if speech_count >= min_speech_frames:
-                    break
-            else:
-                speech_count = 0
-
-        print(" parole detectee!", flush=True)
-
-        # Phase 2: Record until silence
-        frames = list(pre_buffer)  # include pre-roll
-        silence_count = 0
-        max_duration_frames = int(30 * 1000 / frame_ms)  # 30s max
-
-        for _ in range(max_duration_frames):
-            data, _ = stream.read(frame_size)
-            frame = data[:, 0]
-            frames.append(frame.copy())
-
-            if not self._is_speech(frame):
-                silence_count += 1
-                if silence_count >= silence_frames_needed:
-                    break
-            else:
-                silence_count = 0
-
+        # Wait for speech detection + recording to complete (max 60s)
+        done.wait(timeout=60)
         stream.stop()
         stream.close()
 
+        if not frames:
+            print(" (timeout)")
+            return None
+
+        print(" parole detectee!", flush=True)
         audio = np.concatenate(frames)
         duration = len(audio) / self.sample_rate
         print(f"  Enregistre: {duration:.1f}s")
@@ -308,10 +347,43 @@ class VoiceAssistant:
         if decoded.nchannels == 2:
             audio_f32 = audio_f32.reshape(-1, 2).mean(axis=1)
 
-        # Play through output device
+        # Play through output device using callback API (required for WDM-KS BT)
+        import threading
         dev = self._resolve_device(self.output_device, "Output")
-        sd.play(audio_f32, decoded.sample_rate, device=dev)
-        sd.wait()
+
+        # Resample to device sample rate if needed
+        if decoded.sample_rate != self.sample_rate:
+            # Simple linear resampling
+            ratio = self.sample_rate / decoded.sample_rate
+            indices = np.arange(0, len(audio_f32), 1 / ratio).astype(int)
+            indices = indices[indices < len(audio_f32)]
+            audio_f32 = audio_f32[indices]
+
+        playback_pos = 0
+        play_done = threading.Event()
+
+        def play_callback(outdata, frame_count, time_info, status):
+            nonlocal playback_pos
+            end = playback_pos + frame_count
+            if end <= len(audio_f32):
+                outdata[:, 0] = audio_f32[playback_pos:end]
+            else:
+                remaining = len(audio_f32) - playback_pos
+                if remaining > 0:
+                    outdata[:remaining, 0] = audio_f32[playback_pos:]
+                outdata[remaining:, 0] = 0
+                play_done.set()
+                raise sd.CallbackStop()
+            playback_pos = end
+
+        out_stream = sd.OutputStream(
+            device=dev, channels=1, samplerate=self.sample_rate,
+            dtype="float32", blocksize=480, callback=play_callback, latency="high",
+        )
+        out_stream.start()
+        play_done.wait(timeout=len(audio_f32) / self.sample_rate + 3)
+        out_stream.stop()
+        out_stream.close()
 
     # ─── Main loop ────────────────────────────────────────────────────
 

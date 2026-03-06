@@ -5,8 +5,8 @@ audio:
   # Device index or name substring. null = system default.
   # Run: python main.py --list-devices to see available devices.
   # Set to your Ray-Ban Meta glasses Bluetooth name/index.
-  input_device: null
-  output_device: null
+  input_device: "RB Meta 00WJ"
+  output_device: "RB Meta 00WJ"
   sample_rate: 16000
   # VAD sensitivity: multiplier over ambient noise floor (lower = more sensitive)
   vad_sensitivity: 2.5
@@ -38,4 +38,5 @@ tts:
   volume: "+0%"
 
 # Mode: "vad" (continuous listening) or "push" (press Enter to talk)
+# Mode: "vad" (continuous listening, recommended) or "push" (press Enter to talk)
 mode: "vad"

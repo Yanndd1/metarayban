@@ -1,0 +1,32 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+.venv/
+*.egg
+.claude/
+
+# Model cache
+whisper_models/
+*.bin
+*.pt
+
+# BLE explorer output
+gatt_map_*.json
+notify_*.json
+live_*.json
+
+# Generated blocklists
+blocklist/*.hosts
+blocklist/*.conf
+
+# OS
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
