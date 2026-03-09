@@ -3,13 +3,16 @@ package com.metarayban.glasses.data.ble
 import java.util.UUID
 
 /**
- * Meta Ray-Ban BLE protocol constants.
+ * Meta Ray-Ban BLE + WiFi Direct protocol constants.
  *
- * Based on GATT exploration of Ray-Ban Meta V1 (RB Meta 00WJ).
- * Service/characteristic UUIDs and handle mappings from BLE scan.
+ * Reverse-engineered from:
+ * - GATT exploration of Ray-Ban Meta V1 (RB Meta 00WJ)
+ * - PCAP capture of WiFi Direct media transfer (TCP port 20203)
+ * - BLE snoop log analysis (btsnoop_hci.log)
+ * - Meta View APK (com.facebook.stella) decompilation
  *
- * The proprietary protocol details (auth sequence, WiFi activation command)
- * will be filled in after protocol capture analysis.
+ * Protocol stack (top to bottom):
+ *   MediaExchange → WifiFetchManager → DataX → Airshield → WiFi Direct TCP
  */
 object MetaProtocol {
 
@@ -29,15 +32,26 @@ object MetaProtocol {
     /**
      * Command/Notify characteristic.
      * Properties: notify, read (AUTH_REQUIRED)
-     * This is the main bidirectional command channel.
+     * Main bidirectional command channel using FlatBuffers serialization.
      * Handle: 41 (from GATT map)
+     *
+     * FlatBuffers schema namespace: stella.srvs.*
+     * Key commands: StartWebserverRequest, StaModeConnectRequest, etc.
      */
     val CHAR_COMMAND: UUID = UUID.fromString("05acbe9f-6f61-4ca9-80bf-c8bbb52991c0")
+
+    /**
+     * Notification enable characteristic.
+     * Write 0x0100 to enable notifications on CHAR_COMMAND.
+     * Handle: 40 (from GATT map)
+     */
+    val CHAR_NOTIFY_ENABLE: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
     /**
      * Status characteristic.
      * Properties: read
      * Handle: 44 (from GATT map)
+     * Known values: 0x8100 = connected
      */
     val CHAR_STATUS: UUID = UUID.fromString("c53673dd-e411-47c7-8fa2-3a8413578e77")
 
@@ -45,6 +59,7 @@ object MetaProtocol {
      * Flags characteristic.
      * Properties: read
      * Handle: 46 (from GATT map)
+     * Observed values: ff0300, ff0402, ff01ff, ff0400, ff020c
      */
     val CHAR_FLAGS: UUID = UUID.fromString("f9fbf15d-c73d-4e7a-b498-5f1f2a0853a0")
 
@@ -62,36 +77,105 @@ object MetaProtocol {
     /** Device name characteristic */
     val CHAR_DEVICE_NAME: UUID = UUID.fromString("00002a00-0000-1000-8000-00805f9b34fb")
 
-    // ── Protocol Commands (to be filled after capture analysis) ─────────
+    // ── WiFi Direct (P2P) Configuration ─────────────────────────────────
 
     /**
-     * TODO: These will be populated after analyzing btsnoop_hci.log captures.
-     * The captures will reveal the exact byte sequences for:
-     * - Authentication handshake
-     * - WiFi hotspot activation
-     * - Media listing request
-     * - Transfer initiation
+     * WiFi Direct P2P group SSID prefix.
+     * The phone creates a P2P group as Group Owner with this prefix.
+     * Glasses connect as a client to this group.
      */
-
-    // Placeholder: WiFi activation command (write to CHAR_COMMAND)
-    // val CMD_ACTIVATE_WIFI: ByteArray = byteArrayOf(...)
-
-    // Placeholder: Auth challenge response
-    // val CMD_AUTH_RESPONSE: ByteArray = byteArrayOf(...)
-
-    // ── WiFi Transfer ───────────────────────────────────────────────────
+    const val WIFI_DIRECT_SSID_PREFIX = "DIRECT-FB-"
 
     /**
-     * WiFi hotspot SSID pattern created by the glasses.
-     * TODO: Confirm exact pattern from capture.
+     * WiFi Direct subnet used by WifiP2pManager.
+     * Phone (Group Owner): 192.168.49.1
+     * Glasses (Client):    192.168.49.66 (observed, may vary)
      */
-    const val WIFI_SSID_PREFIX = "DIRECT-"
+    const val WIFI_DIRECT_SUBNET = "192.168.49"
+    const val WIFI_DIRECT_PHONE_IP = "192.168.49.1"
+    const val WIFI_DIRECT_GLASSES_IP = "192.168.49.66"
 
     /**
-     * Default HTTP port on the glasses' hotspot.
-     * TODO: Confirm from WiFi probe / PCAP analysis.
+     * TCP port for the proprietary transfer protocol.
+     * NOT HTTP — this is a custom binary protocol wrapped in Airshield encryption.
+     *
+     * From PCAP: all media data flows through TCP 20203 on WiFi Direct.
      */
-    const val TRANSFER_PORT = 80
+    const val TRANSFER_PORT = 20203
+
+    // ── Airshield Encryption Protocol ───────────────────────────────────
+
+    /**
+     * Handshake phase prefix byte.
+     * Packets starting with 0x80 are part of the ECDH key exchange.
+     * Payload: 64-byte public key (likely ECDH P-256 or X25519).
+     */
+    const val AIRSHIELD_HANDSHAKE_PREFIX: Byte = 0x80.toByte()
+
+    /**
+     * Data phase prefix byte.
+     * Packets starting with 0x40 contain encrypted payload.
+     * Encrypted with session key derived from Airshield handshake.
+     */
+    const val AIRSHIELD_DATA_PREFIX: Byte = 0x40
+
+    /**
+     * Airshield uses:
+     * - ECDH for key agreement
+     * - HKDF for key derivation
+     * - AES-GCM (likely) for symmetric encryption
+     * - VOPRF (ed25519/ristretto) for authentication
+     *
+     * Native implementation: libpb_datax_jni.so (via Superpack)
+     * Java classes: com.facebook.wearable.airshield.securer.*
+     */
+
+    // ── FlatBuffers BLE Commands ────────────────────────────────────────
+
+    /**
+     * BLE command identifiers (sent via CHAR_COMMAND).
+     * Serialized using FlatBuffers (namespace: stella.srvs).
+     *
+     * Key commands for media transfer:
+     * - StartWebserverRequest:  Tell glasses to start media server
+     * - StartWebserverResponse: Glasses confirm server started
+     * - StaModeConnectRequest:  Request STA mode WiFi connection
+     * - StopWebserverRequest:   Tell glasses to stop media server
+     *
+     * Other discovered commands:
+     * - TriggerCaptureRequest/Response: Take photo/video
+     * - DeleteCaptureRequest/Response: Delete media from glasses
+     * - GetCaptureInfoRequest/Response: Get capture metadata
+     * - GetAssetContentRequest/Response: Fetch asset data
+     * - GetSystemInfoRequest/Response: Device info query
+     * - NotifyCaptureRequest/Response: Capture notification
+     * - GetWifiCapabilitiesRequest/Response: WiFi capability query
+     */
+    object BleCommands {
+        // FlatBuffers command type identifiers (stella:soc:*)
+        const val START_WEBSERVER = "stella:soc:start_webserver"
+        const val STOP_WEBSERVER = "stella:soc:stop_webserver"
+    }
+
+    // ── Transfer Protocol Details ───────────────────────────────────────
+
+    /**
+     * From PCAP analysis:
+     * - Phone → Glasses: 51 packets, 1,814 bytes (commands)
+     * - Glasses → Phone: 304 packets, 1,890,906 bytes (media data)
+     * - Session lasted ~2 minutes for a small transfer
+     * - Handshake: 0x80 + 64-byte key, Data: 0x40 + encrypted payload
+     * - No JPEG/MP4 markers visible in stream = fully encrypted
+     */
+
+    // ── Meta View APK Package Info ──────────────────────────────────────
+
+    /** Meta View companion app package name */
+    const val META_VIEW_PACKAGE = "com.facebook.stella"
+
+    /** Internal codename for the glasses platform */
+    const val PLATFORM_CODENAME_STELLA = "stella"
+    const val PLATFORM_CODENAME_SILVERSTONE = "silverstone"
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
