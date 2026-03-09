@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MetaRayBan</string>
+    <string name="notification_channel_transfer">Transfert Media</string>
+    <string name="notification_transfer_title">Importation en cours</string>
+</resources>

@@ -30,3 +30,18 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+*.iml
+
+# Android build
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+android/captures/
+*.apk
+*.aab
+
+# Protocol captures
+protocol/captures/
+*_decompiled/
+apk_analysis.json
