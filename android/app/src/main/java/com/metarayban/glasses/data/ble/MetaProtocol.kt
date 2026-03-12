@@ -120,15 +120,29 @@ object MetaProtocol {
     const val AIRSHIELD_DATA_PREFIX: Byte = 0x40
 
     /**
-     * Airshield uses:
-     * - ECDH for key agreement
-     * - HKDF for key derivation
-     * - AES-GCM (likely) for symmetric encryption
-     * - VOPRF (ed25519/ristretto) for authentication
+     * Airshield crypto parameters (confirmed from DEX analysis):
+     * - Key Exchange: ECDH P-256 (secp256r1) — 64-byte public key (x||y)
+     * - Key Derivation: HKDF-SHA256
+     * - Symmetric: AES-256-GCM (AES/GCM/NoPadding)
+     * - Auth: VOPRF-Ristretto (ed25519/ristretto255)
+     * - HPKE suite: DHKEM(P-256, HKDF-SHA256) confirmed in APK
      *
-     * Native implementation: libpb_datax_jni.so (via Superpack)
-     * Java classes: com.facebook.wearable.airshield.securer.*
+     * Key Airshield classes (com.facebook.wearable.airshield):
+     *   securer/StreamSecurerImpl — session controller
+     *   securer/Preamble — handshake exchange (challenges, auth)
+     *   stream/CipherBuilder — key setup (privateKey, remotePublicKey, IV, seed)
+     *   stream/Framing — encrypt/decrypt frames (pack/unpack)
+     *   security/HKDF — key derivation
+     *   security/Cipher — AES-256-GCM operations
+     *   security/PrivateKey.derive(PublicKey) — ECDH shared secret
+     *
+     * Native libs: libairshield_jni.so, libpb_datax_jni.so, libvoprfmerged.so
+     * Implementation: com.metarayban.glasses.data.crypto.AirshieldCrypto
      */
+    const val AIRSHIELD_EC_CURVE = "secp256r1"
+    const val AIRSHIELD_AES_KEY_BITS = 256
+    const val AIRSHIELD_GCM_NONCE_BYTES = 12
+    const val AIRSHIELD_PUBLIC_KEY_BYTES = 64
 
     // ── FlatBuffers BLE Commands ────────────────────────────────────────
 

@@ -95,33 +95,145 @@ TCP Port:             20203
 ### 4.1 Overview
 **Airshield** is Meta's proprietary E2E encryption for wearable communication.
 It wraps all DataX traffic with authenticated encryption.
+Version field: `airshieldVersion` (≥17 for modern features, "1.1+" for advertisement).
 
-### 4.2 Components
-- **`Preamble`**: Initial handshake (key exchange parameters)
-- **`LinkSetup`**: Full key agreement using ECDH
-- **`StreamSecurerImpl`**: Encrypts/decrypts data frames
-- **`Framing`**: Frame-level encrypt (`buildEncryptionFraming`) / decrypt (`buildDecryptionFraming`)
-- Native implementation: `libairshield_jni.so`
+### 4.2 Class Hierarchy (from DEX analysis)
 
-### 4.3 Crypto Primitives
-- **ECDH** (Elliptic Curve Diffie-Hellman) for key agreement
-- **HKDF** for key derivation
-- **SHA-256** for hashing
-- **HMac** for message authentication
-- **VOPRF** (Verifiable Oblivious Pseudo-Random Function) using:
-  - ed25519 (`libvoprf_ed25519_so`)
-  - ristretto (`libvoprf_ristretto_so`)
-- Public/Private key pairs for identity verification
-- `EndLinkSetupMessage` marks end of handshake
-
-### 4.4 Handshake Observed (from PCAP)
 ```
-Phone → Glasses: 0x80 prefix + 64 bytes (likely ECDH public key)
-Glasses → Phone: 0x80 prefix + 64 bytes (likely ECDH public key response)
-[Key derivation via HKDF]
-Phone → Glasses: 0x40 prefix (encrypted commands)
-Glasses → Phone: 0x40 prefix (encrypted media data)
+com.facebook.wearable.airshield.securer/
+├── StreamSecurerImpl          ← Session controller (initialize/start/stop)
+│   ├── onPreambleReady(Preamble)   ← Handshake complete callback
+│   ├── onStreamReady(long, byte[]) ← Stream ready callback
+│   ├── onSend(ByteBuffer)          ← Outgoing data callback
+│   ├── receiveData(ByteBuffer)     ← Incoming data processing
+│   └── receiveSingleFrame(ByteBuffer) ← Single frame processing
+├── Preamble                   ← Handshake exchange
+│   ├── getRxChallenge() → Hash     ← Receive challenge
+│   ├── getTxChallenge() → Hash     ← Transmit challenge
+│   ├── acceptAuthentication(linkKey, callback) ← Accept peer
+│   ├── rejectAuthentication(code)  ← Reject peer
+│   ├── createConnection() → Connection ← Create DataX connection
+│   └── isEncrypted() → boolean     ← Encryption active?
+├── EndLinkSetupMessage        ← Link setup completion
+│   ├── setAsMain(boolean)          ← Set initiator role
+│   └── setUserData(short, byte[])  ← Attach metadata
+├── Stream                     ← Data stream
+│   ├── send(ByteBuffer)            ← Send encrypted data
+│   ├── enableEncryption()          ← Enable encryption
+│   ├── disableEncryption()         ← Disable encryption
+│   ├── getRxUUID()/getTxUUID()     ← Stream identifiers
+│   └── reinitialize()              ← Re-key session
+└── RelayStreamImpl            ← Relay support (multi-hop)
+
+com.facebook.wearable.airshield.stream/
+├── CipherBuilder              ← Cipher construction
+│   ├── setPrivateKey(PrivateKey)         ← Local ECDH key
+│   ├── setRemotePublicKey(PublicKey)     ← Peer ECDH key
+│   ├── setInitializationVector(IV)       ← Nonce seed
+│   ├── setSeed(byte[])                   ← Key derivation seed
+│   ├── setChallenge(byte[])              ← Auth challenge
+│   ├── buildEncryptionFraming(streamId, bool) → Framing
+│   ├── buildDecryptionFraming(streamId, bool) → Framing
+│   ├── buildRxChallenge() → Hash
+│   └── buildTxChallenge() → Hash
+└── Framing                    ← Frame-level crypto
+    ├── pack(plainIn, cipherOut)    ← Encrypt frame
+    ├── unpack(cipherIn, plainOut)  ← Decrypt frame
+    ├── outerFrameSize(innerSize)   ← Calculate frame overhead
+    └── cipherPayloadSize(buf)      ← Get payload size
+
+com.facebook.wearable.airshield.security/
+├── PrivateKey                 ← ECDH P-256 private key
+│   ├── generate()                  ← Generate new keypair
+│   ├── derive(PublicKey) → Hash    ← ECDH shared secret
+│   ├── recoverPublicKey() → PublicKey
+│   ├── sign(Hash) → Signature     ← Sign data
+│   └── serialize() → byte[]
+├── PublicKey                  ← ECDH P-256 public key (64 bytes)
+│   ├── from(byte[]) → PublicKey    ← Deserialize
+│   ├── serialize() → byte[]       ← 64 bytes (x||y uncompressed)
+│   └── verifySignature(Hash, Signature) → boolean
+├── HKDF                       ← Key derivation
+│   └── calculateNative(handle1, handle2) → Hash
+├── Cipher                     ← AES-256-GCM
+│   ├── setup(long, boolean, long)  ← Init cipher context
+│   ├── update(inBuf, outBuf)       ← Encrypt/decrypt block
+│   └── size() → int                ← Key size
+├── Hash                       ← SHA-256 digest (32 bytes)
+├── SHA256                     ← SHA-256 hasher
+├── HMac                       ← HMAC-SHA256
+├── InitializationVector       ← GCM nonce (12 bytes)
+│   └── generate()                  ← Random IV
+├── Hint / HintMatcher         ← Device hint matching
+├── Random                     ← Secure random
+└── Signature                  ← Digital signature
 ```
+
+### 4.3 Confirmed Crypto Parameters
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| Key Exchange | **ECDH P-256 (secp256r1)** | DEX: `Secp256r1`, `DHKEM_P256_SHA256` |
+| Public Key Size | **64 bytes** (uncompressed x∥y) | PCAP: 0x80 + 64 bytes |
+| HPKE Suite | DHKEM(P-256, HKDF-SHA256) | DEX: `"Only DHKEM_P256_SHA256 is supported"` |
+| Key Derivation | **HKDF-SHA256** | DEX: `HKDF` class, `"Only HKDF-SHA256 is supported"` |
+| Symmetric Cipher | **AES-256-GCM** | DEX: `AES/GCM/NoPadding`, `AES_256_GCM` |
+| GCM Nonce | 12 bytes | Standard AES-GCM |
+| GCM Tag | 128 bits | Standard AES-GCM |
+| Hash | SHA-256 | DEX: `SHA256` class |
+| HMAC | HMAC-SHA256 | DEX: `HMac` class |
+| Auth | VOPRF-Ristretto | DEX: `VoprfRistretto`, `libvoprfmerged.so` |
+| Signature | Ed25519/ECDSA | DEX: `PrivateKey.sign()`, `SHA256withECDSA` |
+
+### 4.4 Handshake Protocol (Preamble Phase)
+
+```
+                Phone (PeerA/Main)              Glasses (PeerB)
+                     │                               │
+  StreamSecurerImpl  │                               │
+    .start()         │                               │
+                     │                               │
+  CipherBuilder:     │                               │
+    setPrivateKey()  │  0x80 + localPubKey (64B)     │
+    ─────────────────│──────────────────────────────►│
+                     │                               │  CipherBuilder:
+                     │  0x80 + remotePubKey (64B)    │   setPrivateKey()
+                     │◄──────────────────────────────│
+                     │                               │
+  setRemotePublicKey │                               │
+  ECDH derive()      │                               │  ECDH derive()
+  HKDF expand()      │                               │  HKDF expand()
+                     │                               │
+  onPreambleReady:   │                               │
+    rxChallenge      │  Challenge/Auth exchange       │
+    txChallenge      │◄─────────────────────────────►│
+    acceptAuth()     │                               │
+                     │                               │
+  EndLinkSetupMsg    │  Link Setup Complete           │
+    setAsMain(true)  │◄─────────────────────────────►│
+                     │                               │
+  onStreamReady()    │  0x40 + encrypted data        │  onStreamReady()
+                     │◄─────────────────────────────►│
+```
+
+### 4.5 Data Frame Format
+
+```
+┌──────────┬──────────────┬────────────────────────────────┐
+│ Prefix   │ Nonce (12B)  │ Ciphertext + GCM Tag (16B)     │
+│ 0x40     │ AES-GCM IV   │ AES-256-GCM encrypted payload  │
+└──────────┴──────────────┴────────────────────────────────┘
+
+Total overhead: 1 (prefix) + 12 (nonce) + 16 (tag) = 29 bytes per frame
+```
+
+### 4.6 Transport: BLE L2CAP + WiFi Direct TCP
+
+Airshield operates over two transports:
+- **BLE L2CAP**: Direct Bluetooth connection using `airshield_psm` (Protocol Service Multiplexer)
+- **WiFi Direct TCP**: Port 20203 for bulk data (media transfer)
+
+Commands to initiate: `handleCommandFromA()`, `handleCommandFromB()` in `StreamSecurerImpl`
 
 ## 5. DataX Transport Layer
 
